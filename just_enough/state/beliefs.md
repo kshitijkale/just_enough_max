@@ -1,0 +1,4 @@
+# Belief Diary
+
+---
+## Changelog
