@@ -1,6 +1,4 @@
 __pycache__/
 *.py[oc]
 .venv
-state/ideas/
-state/probes/
-state/logs/
+

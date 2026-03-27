@@ -1,1 +1,516 @@
-[]
+[
+  {
+    "id": "idea_0",
+    "parent_ids": [],
+    "mode": "baseline",
+    "E": "Unmodified baseline",
+    "H": "Establish baseline metrics",
+    "code_file": "just_enough/state/ideas/idea_0_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.996574,
+      "peak_vram_mb": 45060.2,
+      "mfu_percent": 38.92,
+      "num_steps": 932,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.0 (step 40) -> 3.5 (step 200) -> 2.80 (step 930). 94 probe entries over 932 steps. Grad norm: started 0.23, settled ~0.04 by step 200, stable through end. MFU: ~39% steady state. Throughput: ~1.63M tok/sec. LR warmdown from step ~466 to 0.0035 by step 930. Smooth loss still gently declining at end (2.796 at step 930), suggesting model may be slightly undertrained.",
+    "O": "Baseline established. 50.3M param model (depth=8, dim=512) trained for 932 steps in 5 minutes. val_bpb=0.9966. Loss still declining at end despite aggressive warmdown (LR at 0.0035 by final step), suggesting the model could benefit from either faster convergence (higher LR) or more effective use of the time budget (larger model, different schedule)."
+  },
+  {
+    "id": "idea_1",
+    "parent_ids": [
+      "idea_0"
+    ],
+    "mode": "explore",
+    "E": "Increase DEPTH from 8 to 12 (dim goes from 512 to 768, ~113M params). Reduce DEVICE_BATCH_SIZE from 128 to 64 to fit in VRAM.",
+    "H": "Baseline loss was still declining at step 930, and we have VRAM headroom (45GB used). A deeper/wider model has more capacity to fit the data. With depth=12 and ASPECT_RATIO=64, dim=768, num_heads=6. The larger model will do fewer steps in 5 minutes (roughly half, ~460 steps) due to 2x more params and 2x grad accum steps. If succeed: the extra capacity should more than compensate for fewer steps, pushing val_bpb below 0.996. Would suggest model was capacity-limited. If fail: fewer steps means less training \u2014 the model may be undertrained despite more capacity. Would suggest the baseline is compute-limited, not capacity-limited, and we should focus on training efficiency (LR, schedule) instead of model size.",
+    "code_file": "just_enough/state/ideas/idea_1_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 1.014534,
+      "peak_vram_mb": 48990.1,
+      "mfu_percent": 45.17,
+      "num_steps": 382,
+      "num_params_M": 135.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.6 (step 20) -> 2.84 (step 380). Only 382 steps (vs 932 baseline). Grad norm stable at ~0.045. MFU: 45%. Throughput: ~643K tok/sec (vs 1.63M baseline). Smooth loss 2.838 at step 380, still declining steeply. LR warmdown hit 0.007 by end.",
+    "O": "H predicted the larger model might be undertrained \u2014 confirmed. 135M params got only 382 steps (41% of baseline's 932). Despite higher MFU (45% vs 39%), throughput dropped 2.5x due to the bigger model. Smooth loss at end (2.84) was still declining steeply (slope much steeper than baseline's 2.80), meaning this model has more capacity but not enough training time. The 2.7x param increase with only 41% of the steps is clearly compute-limited. Need to find the sweet spot between model size and training steps."
+  },
+  {
+    "id": "idea_2",
+    "parent_ids": [
+      "idea_0"
+    ],
+    "mode": "explore",
+    "E": "Increase MATRIX_LR from 0.04 to 0.06. All other hyperparameters unchanged.",
+    "H": "Belief_2 says the baseline is slightly undertrained (loss still declining at step 930). The matrix params (Muon optimizer) dominate the model \u2014 higher LR should speed convergence. 1.5x increase is conservative. If succeed: loss should drop faster in the first 200 steps, reaching ~2.7 by step 400 instead of ~3.0. Smooth loss at end should be lower. Expect val_bpb improvement of 0.002-0.008. Would strengthen belief_2. If fail (regression or grad norm instability): 0.04 is already near the stability boundary for Muon with this model. Would weaken belief_2 and suggest the model needs more steps rather than bigger steps. Would try reducing warmdown ratio instead.",
+    "code_file": "just_enough/state/ideas/idea_2_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.99663,
+      "peak_vram_mb": 45060.2,
+      "mfu_percent": 38.31,
+      "num_steps": 918,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.64 (step 20) -> 2.79 (step 910). 92 probes over 918 steps. Grad norm: 0.23 -> 0.033 (slightly lower than baseline's 0.04). MFU: 38.3%. Smooth loss at end: 2.794 (very similar to baseline's 2.796). Throughput: ~1.63M tok/sec, same as baseline.",
+    "O": "Essentially flat \u2014 val_bpb 0.99663 vs baseline 0.99657, a negligible 0.00006 difference (regression by noise). 1.5x higher MATRIX_LR did not meaningfully change the loss trajectory. Smooth loss at end nearly identical to baseline (2.794 vs 2.796). Grad norms slightly lower (0.033 vs 0.04) suggesting the model adapted to the higher LR. This weakens belief_2 \u2014 the bottleneck may not be convergence speed via LR. The warmdown schedule (50% of budget) might be the real issue, or the model needs more capacity, not faster optimization."
+  },
+  {
+    "id": "idea_3",
+    "parent_ids": [
+      "idea_0"
+    ],
+    "mode": "explore",
+    "E": "Reduce WARMDOWN_RATIO from 0.5 to 0.3. All other hyperparameters unchanged.",
+    "H": "Belief_3 says the aggressive 50% warmdown may be the undertraining bottleneck. With 50% warmdown, the model spends half its training at reduced LR. Reducing to 30% gives 20% more training time at peak LR (70% vs 50% of budget). If succeed: more time at peak LR should push loss lower before warmdown begins. Expect val_bpb improvement of 0.003-0.010. The loss curve should show a longer flat/declining region before the warmdown decay begins. Would strengthen belief_3. If fail: the warmdown isn't just cosmetic \u2014 it helps prevent late-training instability or helps with generalization. Would weaken belief_3 and suggest the schedule is already tuned.",
+    "code_file": "just_enough/state/ideas/idea_3_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.997974,
+      "peak_vram_mb": 45060.2,
+      "mfu_percent": 39.02,
+      "num_steps": 935,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.65 (step 20) -> 2.80 (step 930). 94 probes over 935 steps. Grad norm: 0.035 at end. MFU: 39%. Smooth loss at end: 2.801 (slightly higher than baseline's 2.796). LR warmdown started later (at 70% progress vs 50%) but decayed faster.",
+    "O": "Reducing warmdown from 0.5 to 0.3 slightly hurt val_bpb (0.9980 vs 0.9966). Despite more time at peak LR, the final smooth loss was slightly higher (2.801 vs 2.796). The aggressive warmdown in baseline appears to help generalization \u2014 the gradual LR decay gives the model a long annealing period that improves the final weights. This contradicts belief_3 and suggests the 50% warmdown is beneficial, not wasteful."
+  },
+  {
+    "id": "idea_4",
+    "parent_ids": [
+      "idea_0",
+      "idea_1"
+    ],
+    "mode": "explore",
+    "E": "Increase DEPTH from 8 to 10 (dim goes from 512 to 640, ~78M params). Reduce DEVICE_BATCH_SIZE from 128 to 96 for VRAM safety.",
+    "H": "Idea_1 showed depth=12 (135M) was too big \u2014 only 382 steps. Depth=10 is a middle ground: ~78M params should get ~600-700 steps. With ASPECT_RATIO=64, dim=640, num_heads=5. The model has 1.55x more params than baseline but should get ~70% of the steps. If succeed: the extra capacity (especially wider dim) should push val_bpb below 0.996. Would narrow down the compute-optimal model size. If fail: even depth=10 is too large for 5 minutes, and baseline depth=8 may already be near optimal for this budget. Would strengthen belief_1 and suggest focusing on architecture efficiency rather than size.",
+    "code_file": "just_enough/state/ideas/idea_4_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 1.005606,
+      "peak_vram_mb": 34574.9,
+      "mfu_percent": 42.26,
+      "num_steps": 569,
+      "num_params_M": 85.9
+    },
+    "probe_summary": "Loss: 9.01 -> 5.78 (step 20) -> 2.82 (step 560). 57 probes over 569 steps. Grad norm: stable ~0.04. MFU: 42%. Throughput: ~970K tok/sec. Smooth loss 2.816 at end, still declining. 86M params.",
+    "O": "Even a modest depth increase (8->10, 50M->86M) regresses. 569 steps (61% of baseline's 932). Smooth loss 2.816 vs baseline's 2.796 \u2014 the model has more capacity but not enough steps to use it. This strongly strengthens belief_1: depth=8 is near compute-optimal. Interestingly VRAM dropped to 35GB due to smaller batch (64 vs 128). The step reduction is from both larger model and more grad_accum_steps (4 vs 2)."
+  },
+  {
+    "id": "idea_5",
+    "parent_ids": [
+      "idea_0"
+    ],
+    "mode": "explore",
+    "E": "Halve TOTAL_BATCH_SIZE from 2^19 (524K) to 2^18 (262K). All other hyperparameters unchanged.",
+    "H": "With 2^18 batch, grad_accum_steps goes from 2 to 1 (no accumulation needed with batch=128, seq=2048). This means each forward/backward pass IS an optimizer step. The model gets ~1860 optimizer steps instead of ~930. Each step sees half the tokens, but the model gets 2x more weight updates. If succeed: more frequent updates help the model converge faster within the time budget. The critical question is whether 262K tokens per step is enough for stable gradients with this model size. Would suggest the baseline was gradient-starved (not enough updates). If fail: halved batch may increase gradient noise, causing instability or worse convergence. Would suggest 524K batch is necessary for stable training at this LR.",
+    "code_file": "just_enough/state/ideas/idea_5_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.988465,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.38,
+      "num_steps": 1828,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.73 (step 20) -> 2.77 (step 1820). 183 probes over 1828 steps (2x baseline). Grad norm: 0.22 -> 0.052 (slightly higher than baseline's 0.04, expected from noisier gradients). MFU: 38.4%. Throughput: ~1.63M tok/sec (same as baseline). Smooth loss 2.772 at end, still gently declining. No grad accum (1 step = 1 fwd/bwd).",
+    "O": "First improvement! val_bpb 0.9885 vs baseline 0.9966, a solid 0.008 gain. Halving batch size gave 2x more optimizer steps (1828 vs 932) with identical throughput. Despite noisier gradients (grad norm 0.052 vs 0.04), the extra updates clearly helped convergence. Smooth loss reached 2.772 vs baseline's 2.796. This strongly suggests the baseline was step-limited \u2014 it needed more frequent weight updates, not more tokens per update. The batch size was unnecessarily large for this model size."
+  },
+  {
+    "id": "idea_6",
+    "parent_ids": [
+      "idea_5"
+    ],
+    "mode": "refine",
+    "E": "Further reduce TOTAL_BATCH_SIZE from 2^18 (262K) to 2^17 (131K), and DEVICE_BATCH_SIZE from 128 to 64 (so grad_accum_steps stays at 1). 4x more optimizer steps than baseline.",
+    "H": "Idea_5 showed halving batch improved val_bpb by 0.008. Belief_5 says the batch was too large. If the trend continues, 2^17 should give ~3600 steps (4x baseline) and further improve val_bpb. If succeed: would confirm more steps is better and push val_bpb below 0.988. Would strengthen belief_5 and suggest exploring even smaller batches. If fail: gradient noise from 131K tokens per step may be too high for stable training with Muon. Would establish a lower bound on useful batch size and suggest 2^18 is near optimal.",
+    "code_file": "just_enough/state/ideas/idea_6_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.995949,
+      "peak_vram_mb": 22701.2,
+      "mfu_percent": 34.19,
+      "num_steps": 3249,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 5.85 (step 20) -> 2.78 (step 3240). 325 probes over 3249 steps. Grad norm: 0.07 (higher than idea_5's 0.052). MFU: 34% (dropped from 38%). Throughput: ~1.3M tok/sec (down from 1.63M). Smooth loss 2.784 at end (worse than idea_5's 2.772).",
+    "O": "Going from 2^18 to 2^17 batch hurt. Despite 3249 steps (1.8x idea_5), val_bpb regressed to 0.9959 from 0.9885. Two factors: (1) GPU underutilized \u2014 MFU dropped from 38% to 34%, throughput from 1.63M to 1.3M tok/sec. (2) Noisier gradients \u2014 grad norm 0.07 vs 0.052. This establishes 2^18 as near-optimal for this model: enough steps for convergence without excessive gradient noise or GPU waste."
+  },
+  {
+    "id": "idea_7",
+    "parent_ids": [
+      "idea_5"
+    ],
+    "mode": "explore",
+    "E": "Replace ReLU^2 MLP activation with SwiGLU. SwiGLU uses gate+up projections with SiLU gating. Hidden dim set to ~8/3*n_embd (rounded to 128) to keep param count similar. Starting from idea_5's 2^18 batch.",
+    "H": "SwiGLU has become the standard MLP activation in modern LLMs (LLaMA, etc) and consistently outperforms ReLU variants in the literature. The gated architecture should improve feature selection. The param count stays similar (~52M vs 50M) since we use 8/3 expansion instead of 4x. If succeed: better activation should push val_bpb below 0.988 without throughput loss. Would indicate the MLP activation is a meaningful lever. If fail: ReLU^2 may already be well-matched to this optimizer/model combination. SwiGLU's benefit may be overfit-dependent (helps more at larger scale). Would suggest focusing on optimizer/schedule changes instead of architecture.",
+    "code_file": "just_enough/state/ideas/idea_7_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.989334,
+      "peak_vram_mb": 45430.8,
+      "mfu_percent": 37.33,
+      "num_steps": 1756,
+      "num_params_M": 50.9
+    },
+    "probe_summary": "Loss: 9.01 -> 5.74 (step 20) -> 2.77 (step 1750). 176 probes over 1756 steps. Grad norm: 0.048 at end (similar to idea_5's 0.052). MFU: 37.3% (slightly lower than idea_5's 38.4%). Smooth loss 2.767 at end \u2014 similar final loss but fewer steps.",
+    "O": "SwiGLU did not improve over ReLU^2. val_bpb 0.9893 vs idea_5's 0.9885 \u2014 slightly worse. Fewer steps (1756 vs 1828) due to extra gate projection making each step ~4% slower. ReLU^2 appears well-suited to this model/optimizer combination, possibly because Muon's orthogonalization interacts better with the simpler activation. The squared ReLU provides strong sparsity which may be beneficial at this scale."
+  },
+  {
+    "id": "idea_8",
+    "parent_ids": [
+      "idea_5"
+    ],
+    "mode": "refine",
+    "E": "Increase WARMDOWN_RATIO from 0.5 to 0.6 on idea_5's 2^18 batch configuration.",
+    "H": "Belief_4 says warmdown helps generalization \u2014 reducing it from 0.5 to 0.3 hurt. Extending warmdown to 0.6 might help further. With 2^18 batch (1828 steps), the model gets more steps in warmdown for smoother annealing. If succeed: longer warmdown gives better final weight quality, pushing val_bpb below 0.988. Would strengthen belief_4 and suggest even longer warmdown could help. If fail: 0.5 is already optimal \u2014 more warmdown reduces useful training time too much despite the generalization benefit. Would establish 0.5 as the sweet spot.",
+    "code_file": "just_enough/state/ideas/idea_8_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.987952,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.19,
+      "num_steps": 1819,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> ~2.78 (step 1810). 182 probes over 1819 steps. Grad norm: 0.055 at end (similar to idea_5). MFU: 38.2%. Smooth loss 2.776 at end. LR warmdown started at 40% progress (earlier than idea_5's 50%), giving longer annealing.",
+    "O": "Extending warmdown from 0.5 to 0.6 gave another 0.0005 improvement (0.9880 vs 0.9885). Modest but consistent with belief_4 \u2014 longer warmdown helps generalization. The model spent more time annealing (60% of budget) with only 40% at peak LR, yet the better final weight quality more than compensated. This suggests the benefit of warmdown may extend even further."
+  },
+  {
+    "id": "idea_9",
+    "parent_ids": [
+      "idea_8"
+    ],
+    "mode": "refine",
+    "E": "Increase WARMDOWN_RATIO from 0.6 to 0.7 on idea_8's configuration (2^18 batch + 0.6 warmdown was best).",
+    "H": "Belief_4 shows warmdown improvement from 0.5->0.6. Testing if the trend continues to 0.7 (only 30% at peak LR). If succeed: warmdown is the dominant schedule lever and we should keep pushing. Would suggest trying 0.8. If fail: diminishing returns \u2014 too little peak LR time starves training. Would establish 0.6 as optimal and stop exploring warmdown.",
+    "code_file": "just_enough/state/ideas/idea_9_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.986669,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.81,
+      "num_steps": 1849,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.77 (step 1840). 185 probes over 1849 steps. Grad norm: 0.058. MFU: 38.8%. Smooth loss 2.770 at end. Only 30% of training at peak LR.",
+    "O": "Warmdown=0.7 improved further: val_bpb 0.9867 vs 0.9880 (warmdown=0.6). Despite only 30% of training at peak LR, the extended annealing gave better generalization. Improvement from 0.5->0.6 was 0.0005, from 0.6->0.7 was 0.0013 \u2014 accelerating improvement, not diminishing returns! This strongly suggests pushing to 0.8. The model benefits from a very gradual cooldown."
+  },
+  {
+    "id": "idea_10",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "refine",
+    "E": "Increase WARMDOWN_RATIO from 0.7 to 0.8. Only 20% of training at peak LR.",
+    "H": "Warmdown improvement is accelerating: 0.5->0.6 gained 0.0005, 0.6->0.7 gained 0.0013. If the trend continues, 0.8 should gain another 0.001-0.002. If succeed: would push below 0.985 and confirm the model heavily benefits from annealing. If fail: 20% at peak LR isn't enough to learn core features before cooldown. Would establish 0.7 as optimal.",
+    "code_file": "just_enough/state/ideas/idea_10_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.987542,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.31,
+      "num_steps": 1825,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.77 (step 1820). 183 probes. Grad norm: 0.061. MFU: 38.3%. Smooth loss 2.769 at end.",
+    "O": "Warmdown=0.8 regressed vs 0.7 (0.9875 vs 0.9867). Only 20% at peak LR wasn't enough \u2014 the model starts annealing before it has fully converged on core features. The warmdown benefit has a peak at 0.7. Warmdown series: 0.3=0.9980, 0.5=0.9885, 0.6=0.9880, 0.7=0.9867, 0.8=0.9875. Clear optimum at 0.7."
+  },
+  {
+    "id": "idea_11",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "refine",
+    "E": "Add WARMUP_RATIO=0.05 (5% warmup) to idea_9's configuration (2^18 batch, warmdown=0.7). Peak LR now at 5-30% progress, warmdown at 30-100%.",
+    "H": "The current setup jumps directly to peak LR which may cause early instability. A 5% warmup gives the optimizer time to calibrate gradient statistics before full-speed training. With 1849 steps, 5% warmup = ~90 steps. If succeed: smoother early training should improve final val_bpb by 0.001-0.003. Would add warmup to the recipe. If fail: the optimizer (Muon + AdamW) handles cold-start well already, and warmup just wastes 5% of peak-LR time. Would confirm 0% warmup is optimal.",
+    "code_file": "just_enough/state/ideas/idea_11_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.987392,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.3,
+      "num_steps": 1825,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.77 (step 1820). 183 probes. Grad norm: 0.058. MFU: 38.3%. Smooth loss 2.769.",
+    "O": "5% warmup slightly hurt (0.9874 vs 0.9867). The optimizer handles cold-start fine without warmup. The warmup just reduced peak-LR training time without benefit. Confirms 0% warmup is optimal for this Muon+AdamW setup."
+  },
+  {
+    "id": "idea_12",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "refine",
+    "E": "Increase WEIGHT_DECAY from 0.2 to 0.4 on idea_9's best config (2^18 batch, warmdown=0.7).",
+    "H": "Weight decay is a regularizer \u2014 stronger WD might improve generalization, especially since we found longer warmdown helps generalization too. The cautious Muon WD only applies weight decay where the gradient aligns with the weight, so it's less aggressive than standard WD. If succeed: stronger regularization would improve val_bpb. Combined with the warmdown, these two regularization methods could compound. If fail: 0.2 is already optimal, or higher WD slows learning too much within the time budget.",
+    "code_file": "just_enough/state/ideas/idea_12_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.991097,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.69,
+      "num_steps": 1843,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.78 (step 1840). Grad norm: 0.072 (higher than idea_9's 0.058). Smooth loss 2.782 vs idea_9's 2.770.",
+    "O": "WD=0.4 clearly regressed (0.9911 vs 0.9867). Higher weight decay slowed learning \u2014 smooth loss 2.782 vs 2.770. Grad norms higher (0.072 vs 0.058) suggesting the WD is fighting the optimizer too hard. WD=0.2 appears near-optimal for this setup."
+  },
+  {
+    "id": "idea_13",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "refine",
+    "E": "Decrease WEIGHT_DECAY from 0.2 to 0.1 on idea_9's best config.",
+    "H": "WD=0.4 regressed badly (idea_12). Trying the other direction \u2014 WD=0.1 may let the model learn faster without regularization fighting the optimizer. If succeed: lighter regularization is better for this short training budget. If fail: 0.2 is a balanced tradeoff between speed and generalization.",
+    "code_file": "just_enough/state/ideas/idea_13_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.987178,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.35,
+      "num_steps": 1827,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.77. 183 probes. Grad norm: ~0.055. MFU: 38.4%.",
+    "O": "WD=0.1 gave 0.9872, worse than WD=0.2's 0.9867. WD series: 0.1=0.9872, 0.2=0.9867, 0.4=0.9911. WD=0.2 is optimal for this setup \u2014 enough regularization to help generalization without slowing learning."
+  },
+  {
+    "id": "idea_14",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "explore",
+    "E": "Replace linear warmdown with cosine warmdown on idea_9's config. Cosine schedule: 0.5*(1+cos(pi*x)) where x goes from 0 to 1 during warmdown. Keeps LR higher early in warmdown phase.",
+    "H": "Investigation showed 90% of loss improvement in peak LR, but the early warmdown phase (steps 600-1400) still contributes meaningfully. Cosine warmdown keeps LR at ~0.85 at 20% through warmdown (vs 0.80 for linear), giving more learning capacity where it matters. By the end of warmdown both converge to 0. If succeed: better use of the warmdown budget, pushing val_bpb below 0.986. Would add cosine to the recipe. If fail: the schedule shape doesn't matter much \u2014 what matters is just having a long enough warmdown. Would mean linear vs cosine is negligible.",
+    "code_file": "just_enough/state/ideas/idea_14_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.990062,
+      "peak_vram_mb": 44908.2,
+      "mfu_percent": 38.3,
+      "num_steps": 1825,
+      "num_params_M": 50.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.78 (step 1820). Smooth loss 2.776. LR reaches 0.0 by step 1820 (cosine decays faster at end).",
+    "O": "Cosine warmdown significantly worse than linear (0.9901 vs 0.9867). Cosine keeps LR higher early in warmdown but decays faster at the end. The linear schedule's more gradual early decay is actually better \u2014 it starts regularizing earlier and more uniformly. Linear warmdown is optimal for this setup."
+  },
+  {
+    "id": "idea_15",
+    "parent_ids": [
+      "idea_9"
+    ],
+    "mode": "explore",
+    "E": "Change to DEPTH=9, ASPECT_RATIO=56. This gives base_dim=504, which rounds to dim=512 (same as baseline). One more layer at same width. ~56M params (12% more). Based on idea_9's best config (2^18 batch, warmdown=0.7).",
+    "H": "Previous depth increases (idea_1: 12, idea_4: 10) failed because they also widened the model via ASPECT_RATIO=64. By using ASPECT_RATIO=56, we keep dim=512 (same as baseline) and only add one layer. The 12% param increase means ~12% slower steps, ~1620 steps vs 1849. If succeed: the extra layer provides more sequential processing capacity without excessive param increase. Would suggest depth is beneficial when width is held constant. If fail: even 12% fewer steps matters \u2014 the model is truly at its step-optimal size. Would strongly confirm belief_1.",
+    "code_file": "just_enough/state/ideas/idea_15_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.985895,
+      "peak_vram_mb": 50100.2,
+      "mfu_percent": 39.68,
+      "num_steps": 1672,
+      "num_params_M": 57.7
+    },
+    "probe_summary": "Loss: 9.01 -> 2.76 (step 1670). 168 probes over 1672 steps. Grad norm: 0.056. MFU: 39.7%. Throughput: ~1.43M tok/sec. Smooth loss 2.762 at end (vs idea_9's 2.770). VRAM: 50.1GB (up from 44.9GB).",
+    "O": "Depth=9 with same width (dim=512) is a significant win! val_bpb 0.9859 vs 0.9867. The key insight: previous depth increases failed because ASPECT_RATIO=64 also widened the model. By holding width constant and adding just one layer, we get the depth benefit without excessive param/compute cost. 57.7M params (15% more), 1672 steps (10% fewer), but the extra sequential processing capacity improved both train loss and val_bpb. VRAM at 50.1GB is getting closer to the limit but still OK."
+  },
+  {
+    "id": "idea_16",
+    "parent_ids": [
+      "idea_15"
+    ],
+    "mode": "refine",
+    "E": "Increase to DEPTH=10, ASPECT_RATIO=51. base_dim=510 rounds to dim=512 (same width as baseline and idea_15). Two more layers than baseline at same width. Based on idea_15's config.",
+    "H": "Belief_6 says adding depth at constant width helps. Depth=9 improved over 8. Testing if depth=10 continues the trend. ~65M params, expect ~1500 steps. If succeed: depth at constant width continues to pay off. Would push below 0.985. If fail: the step reduction from 10 layers is too much. Would establish depth=9 as the optimal depth at this width.",
+    "code_file": "just_enough/state/ideas/idea_16_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.98447,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.62,
+      "num_steps": 1528,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "Loss: 9.01 -> 2.76 (step 1520). 153 probes. Grad norm: 0.053. MFU: 39.6%. Throughput: ~1.29M tok/sec. Smooth loss 2.761 at end. VRAM: 55GB.",
+    "O": "Depth=10 at constant width (dim=512) is a clear further improvement: val_bpb 0.9845 vs idea_15's 0.9859. The depth-at-constant-width strategy continues to pay off. 1528 steps (down from 1672) but the extra layer provides enough sequential processing capacity to more than compensate. VRAM at 55GB is getting closer to limits. Smooth loss 2.761 vs 2.762 \u2014 very similar train loss but better generalization from the deeper model."
+  },
+  {
+    "id": "idea_17",
+    "parent_ids": [
+      "idea_16"
+    ],
+    "mode": "refine",
+    "E": "Increase to DEPTH=12, ASPECT_RATIO=42 (12*42=504, rounds to dim=512). Same width as all previous, but 50% more depth than baseline. ~73M params. Based on idea_16's config.",
+    "H": "Depth at constant width has improved monotonically: 8->9->10. Testing if 12 continues the trend. Expect ~1300 steps (down from 1528). 50% more layers at dim=512 is a significant jump. VRAM may be a concern (~65GB?). If succeed: deep narrow models dominate in this setup. If fail: 12 layers is too many \u2014 step reduction outweighs depth benefit.",
+    "code_file": "just_enough/state/ideas/idea_17_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.984339,
+      "peak_vram_mb": 65103.3,
+      "mfu_percent": 39.65,
+      "num_steps": 1308,
+      "num_params_M": 71.3
+    },
+    "probe_summary": "Loss: 9.01 -> 2.76 (step 1300). 131 probes. Grad norm: 0.051. MFU: 39.7%. Smooth loss 2.763. VRAM: 65GB.",
+    "O": "Depth=12 at dim=512 gave marginal improvement (0.9843 vs 0.9845). The depth scaling has flattened \u2014 going from 10->12 gained only 0.0001 while losing 220 steps and using 10GB more VRAM. Depth=10 appears to be the sweet spot for constant-width scaling at dim=512. Further depth increases are not worth the step/VRAM cost."
+  },
+  {
+    "id": "idea_18",
+    "parent_ids": [
+      "idea_16"
+    ],
+    "mode": "refine",
+    "E": "Set FINAL_LR_FRAC=0.05 on idea_16's config (depth=10, dim=512, 2^18 batch, warmdown=0.7). Keeps 5% of peak LR at end of training instead of decaying to 0.",
+    "H": "The model's loss is still declining at end (smooth_loss 2.761, still dropping). A small residual LR (5% of initial) lets the model keep learning in the final steps instead of stalling at LR=0. The tradeoff: less complete annealing may slightly hurt generalization. If succeed: the final steps contribute more learning. Would suggest the current schedule anneals too aggressively. If fail: full annealing to 0 is optimal for weight quality.",
+    "code_file": "just_enough/state/ideas/idea_18_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.984155,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.63,
+      "num_steps": 1528,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "Loss: 9.01 -> 2.76 (step 1520). 153 probes. Same steps/params as idea_16. Final LR at 5% of peak instead of 0.",
+    "O": "FINAL_LR_FRAC=0.05 gave a small improvement (0.9842 vs 0.9845). The model benefits from a small residual LR at the end of training rather than full annealing to 0. The 5% floor prevents the final steps from being wasted at near-zero LR."
+  },
+  {
+    "id": "idea_19",
+    "parent_ids": [
+      "idea_18"
+    ],
+    "mode": "refine",
+    "E": "Increase FINAL_LR_FRAC from 0.05 to 0.1 on idea_18's config.",
+    "H": "FINAL_LR_FRAC=0.05 improved. Testing 0.1 to see if more residual LR helps. If succeed: more active learning at end is better. If fail: 0.1 is too much residual LR, hurting annealing quality.",
+    "code_file": "just_enough/state/ideas/idea_19_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.985487,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.63,
+      "num_steps": 1528,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "Same as idea_18 but with higher residual LR.",
+    "O": "FINAL_LR_FRAC=0.1 worse than 0.05 (0.9855 vs 0.9842). Too much residual LR hurts annealing. Series: 0.0=0.9845, 0.05=0.9842, 0.1=0.9855. Sweet spot is 0.05."
+  },
+  {
+    "id": "idea_20",
+    "parent_ids": [
+      "idea_18"
+    ],
+    "mode": "explore",
+    "E": "Change HEAD_DIM from 128 to 64 on idea_18's config. This gives 8 attention heads instead of 4 at same dim=512. Same param count, same compute, different attention granularity.",
+    "H": "More heads (8 vs 4) with smaller head dim (64 vs 128) allows more diverse attention patterns. Each head specializes on different aspects. Same total attention capacity. This is essentially free \u2014 same params, same FLOPS. If succeed: the model benefits from finer-grained attention. Would indicate the 128-dim heads were too coarse. If fail: 128-dim heads provide enough per-head capacity and more heads don't help. Or the FA3 kernel has different performance at head_dim=64.",
+    "code_file": "just_enough/state/ideas/idea_20_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.992084,
+      "peak_vram_mb": 55132.8,
+      "mfu_percent": 38.55,
+      "num_steps": 1487,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "1487 steps, slightly fewer than idea_18. Same params.",
+    "O": "HEAD_DIM=64 (8 heads) clearly worse than HEAD_DIM=128 (4 heads): val_bpb 0.992 vs 0.984. Despite same param count and compute, the 64-dim heads underperform. Larger per-head capacity (128) matters more than more heads (8 vs 4) at this model width. The model's attention patterns need the expressiveness of 128-dim queries/keys/values. Also got 41 fewer steps (1487 vs 1528), suggesting FA3 kernel is slightly less efficient at head_dim=64."
+  },
+  {
+    "id": "idea_21",
+    "parent_ids": [
+      "idea_18"
+    ],
+    "mode": "refine",
+    "E": "Halve EMBEDDING_LR from 0.6 to 0.3 on idea_18's config. The embedding LR (scaled by 1.225 for dim=512) becomes 0.37 effective vs 0.74 previously.",
+    "H": "EMBEDDING_LR=0.6 is very high \u2014 15x MATRIX_LR. Token embeddings may be updating too aggressively, causing noise. Halving to 0.3 should stabilize embedding learning. If succeed: embeddings were over-updating. If fail: high embedding LR is fine or even necessary for fast embedding convergence.",
+    "code_file": "just_enough/state/ideas/idea_21_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.984138,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.9,
+      "num_steps": 1538,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "1538 steps (10 more than idea_18). MFU: 39.9% (slightly higher).",
+    "O": "EMBEDDING_LR=0.3 gave a tiny improvement (0.98414 vs 0.98416). Essentially tied \u2014 EMBEDDING_LR isn't a major lever. The model is insensitive to halving embedding LR. Got 10 more steps (1538 vs 1528) and slightly higher MFU (39.9% vs 39.6%). The improvement may be within noise."
+  },
+  {
+    "id": "idea_22",
+    "parent_ids": [
+      "idea_18"
+    ],
+    "mode": "explore",
+    "E": "Increase logit softcap from 15 to 30 on idea_18's config. Allows model to produce more confident predictions.",
+    "H": "The softcap at 15 limits the model's logit range via tanh(logits/15)*15. If the model's confident predictions are being clipped, this limits expressiveness. Doubling to 30 gives much more headroom. If succeed: the model was being limited by the cap, especially for high-confidence predictions. Would suggest further relaxation. If fail: the softcap provides useful regularization that prevents overconfident predictions, or the model's logits are well within [-15,15] already.",
+    "code_file": "just_enough/state/ideas/idea_22_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.987248,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 40.0,
+      "num_steps": 1542,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "1542 steps. MFU: 40%.",
+    "O": "Softcap=30 regressed (0.9872 vs 0.9842). The tighter softcap at 15 acts as beneficial regularization, preventing overconfident logits. Relaxing it removes this regularization and hurts generalization."
+  },
+  {
+    "id": "idea_23",
+    "parent_ids": [
+      "idea_18"
+    ],
+    "mode": "explore",
+    "E": "Decrease logit softcap from 15 to 10. Tighter regularization on logit magnitudes.",
+    "H": "Softcap=30 regressed \u2014 more regularization might help. Softcap=10 further constrains logits, acting as stronger regularization. If succeed: tighter softcap improves generalization. If fail: 10 is too restrictive \u2014 limits model expressiveness too much.",
+    "code_file": "just_enough/state/ideas/idea_23_train.py",
+    "status": "success",
+    "result": {
+      "val_bpb": 0.983937,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.77,
+      "num_steps": 1534,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "1534 steps. MFU: 39.8%.",
+    "O": "Softcap=10 improved! val_bpb 0.9839 vs 0.9842 (softcap=15). Tighter logit capping improves generalization. Softcap series: 10=0.9839 (best), 15=0.9842, 30=0.9872. The model benefits from stronger logit regularization. Worth trying softcap=8 or 5."
+  },
+  {
+    "id": "idea_24",
+    "parent_ids": [
+      "idea_23"
+    ],
+    "mode": "refine",
+    "E": "Decrease softcap from 10 to 7 on idea_23's config.",
+    "H": "Softcap=10 improved over 15. Testing if even tighter helps. If succeed: stronger logit regularization is better. If fail: 7 is too restrictive, limiting model expressiveness.",
+    "code_file": "just_enough/state/ideas/idea_24_train.py",
+    "status": "regression",
+    "result": {
+      "val_bpb": 0.988742,
+      "peak_vram_mb": 55006.2,
+      "mfu_percent": 39.86,
+      "num_steps": 1537,
+      "num_params_M": 60.8
+    },
+    "probe_summary": "1537 steps. MFU: 39.9%.",
+    "O": "Softcap=7 significantly regressed (0.9887 vs 0.9839). Too restrictive \u2014 limits the model's ability to make confident correct predictions. Softcap series: 7=0.9887, 10=0.9839 (best), 15=0.9842, 30=0.9872. Clear optimum at 10."
+  },
+  {
+    "id": "idea_25",
+    "parent_ids": [
+      "idea_23",
+      "idea_21"
+    ],
+    "mode": "exploit",
+    "E": "Combine idea_23 (softcap=10) with idea_21 (EMBEDDING_LR=0.3). Both are independent modifications: softcap affects logit regularization, embedding LR affects embedding learning speed.",
+    "H": "Both changes independently improved val_bpb (idea_23: 0.9839, idea_21: 0.9841). They touch different subsystems (logit output vs embedding input). If they compose: expect val_bpb ~0.9835-0.9838. If they conflict: the tighter softcap might interact with embedding learning in unexpected ways.",
+    "code_file": "just_enough/state/ideas/idea_25_train.py",
+    "status": "pending",
+    "result": null,
+    "probe_summary": "",
+    "O": ""
+  }
+]
